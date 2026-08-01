@@ -1,19 +1,22 @@
 """
 Signal — Competitor Tracking Prototype
-A lightweight AI agent that pulls live Amazon competitor data (price, rating,
-reviews, best-seller rank) and turns it into a plain-English weekly digest.
+A lightweight AI agent that tracks Amazon competitor data (price, rating,
+reviews, best-seller rank) and turns it into a plain-English weekly digest
+using Claude.
 
-
+This demo version uses realistic synthetic data so it works without any
+paid data API. The digest generation below is fully live — it calls Claude
+in real time, it isn't scripted.
 
 Setup:
   1. pip install -r requirements.txt
-  2. Add RAINFOREST_API_KEY and ANTHROPIC_API_KEY to .streamlit/secrets.toml
-     (locally) or under "Secrets" in Streamlit Community Cloud (when deployed).
+  2. Add ANTHROPIC_API_KEY to .streamlit/secrets.toml (locally) or under
+     "Secrets" in Streamlit Community Cloud (when deployed).
   3. streamlit run app.py
 """
 
 import json
-from datetime import datetime
+import random
 
 import pandas as pd
 import requests
@@ -24,77 +27,88 @@ import streamlit as st
 # ---------------------------------------------------------------------------
 st.set_page_config(page_title="Signal — Competitor Tracking", page_icon="📡", layout="wide")
 
-RAINFOREST_API_KEY = st.secrets.get("RAINFOREST_API_KEY", "")
 ANTHROPIC_API_KEY = st.secrets.get("ANTHROPIC_API_KEY", "")
-
-RAINFOREST_URL = "https://api.rainforestapi.com/request"
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 
+DAYS = 14
+
+PRODUCTS = [
+    {"name": "Glacier 32oz Insulated Bottle", "brand": "Kelvra", "price": 27.99, "rating": 4.6, "reviews": 4210, "rank": 812, "seed": 11},
+    {"name": "TrailMate Steel Bottle 24oz", "brand": "Northfare", "price": 22.5, "rating": 4.4, "reviews": 8890, "rank": 340, "seed": 23},
+    {"name": "Everchill Sport Flask 40oz", "brand": "Everchill", "price": 31.99, "rating": 4.7, "reviews": 2130, "rank": 1450, "seed": 37},
+    {"name": "CamperPro Vacuum Bottle 20oz", "brand": "CamperPro", "price": 19.99, "rating": 4.3, "reviews": 15600, "rank": 128, "seed": 51},
+    {"name": "AlpineSeal Wide Mouth 32oz", "brand": "AlpineSeal", "price": 25.0, "rating": 4.5, "reviews": 5460, "rank": 590, "seed": 67},
+]
+
 # ---------------------------------------------------------------------------
-# Data fetching
+# Synthetic data generation (deterministic per product via seed)
 # ---------------------------------------------------------------------------
-@st.cache_data(ttl=3600, show_spinner=False)
-def fetch_product(asin: str, amazon_domain: str = "amazon.com"):
-    """Pull live product data for one ASIN via Rainforest API."""
-    params = {
-        "api_key": RAINFOREST_API_KEY,
-        "type": "product",
-        "amazon_domain": amazon_domain,
-        "asin": asin,
-    }
-    resp = requests.get(RAINFOREST_URL, params=params, timeout=30)
-    resp.raise_for_status()
-    data = resp.json()
-    product = data.get("product", {})
-
-    price = None
-    if product.get("buybox_winner", {}).get("price"):
-        price = product["buybox_winner"]["price"].get("value")
-    elif product.get("price"):
-        price = product["price"].get("value")
-
-    rank = None
-    bestsellers = product.get("bestsellers_rank", [])
-    if bestsellers:
-        rank = bestsellers[0].get("rank")
-
-    return {
-        "asin": asin,
-        "title": product.get("title", "Unknown product"),
-        "brand": product.get("brand", "—"),
-        "price": price,
-        "rating": product.get("rating"),
-        "reviews": product.get("ratings_total"),
-        "rank": rank,
-        "fetched_at": datetime.utcnow().isoformat(),
-    }
+@st.cache_data(show_spinner=False)
+def build_series():
+    all_rows = []
+    for p in PRODUCTS:
+        rng = random.Random(p["seed"])
+        price, reviews, rank = p["price"], p["reviews"], p["rank"]
+        history = []
+        for d in range(DAYS):
+            price += (rng.random() - 0.5) * (4 if rng.random() < 0.12 else 0.4)
+            price = max(9.99, round(price, 2))
+            reviews += round(rng.random() * 25 + (120 if rng.random() < 0.1 else 0))
+            rank += round((rng.random() - 0.5) * (300 if rng.random() < 0.15 else 40))
+            rank = max(1, rank)
+            history.append({"day": d + 1, "price": price, "reviews": reviews, "rank": rank})
+        all_rows.append({**p, "history": history})
+    return all_rows
 
 
-def generate_digest(rows: list[dict]) -> str:
-    """Call Claude to turn the raw snapshot into a plain-English digest."""
+def snapshot_rows(series):
+    rows = []
+    for p in series:
+        first, last = p["history"][0], p["history"][-1]
+        rows.append({
+            "brand": p["brand"],
+            "title": p["name"],
+            "price": last["price"],
+            "price_delta": round(last["price"] - first["price"], 2),
+            "rating": p["rating"],
+            "reviews": last["reviews"],
+            "reviews_delta": last["reviews"] - first["reviews"],
+            "rank": last["rank"],
+            "rank_delta": last["rank"] - first["rank"],
+        })
+    return rows
+
+
+def generate_digest(rows: list) -> str:
+    """Call Claude to turn the snapshot + 14-day deltas into a plain-English digest."""
     payload = [
         {
-            "product": f"{r['brand']} — {r['title'][:60]}",
-            "price": f"${r['price']}" if r["price"] else "unavailable",
+            "product": f"{r['brand']} — {r['title']}",
+            "price": f"${r['price']}", "price_change_14d": r["price_delta"],
             "rating": r["rating"],
-            "reviews": r["reviews"],
-            "bsr": r["rank"],
+            "reviews": r["reviews"], "review_change_14d": r["reviews_delta"],
+            "bsr": r["rank"], "bsr_change_14d": r["rank_delta"],
         }
         for r in rows
     ]
 
     prompt = (
         "You are a market intelligence analyst at an Amazon marketing agency. "
-        "Given this live snapshot of competing products (JSON below), write a "
-        "120-160 word plain-English read for a marketing strategist: note pricing "
-        "spread, which products look strongest on reviews/rank, and one recommended "
-        "watch-item. Flowing prose, no bullet points, no markdown.\n\n"
+        "Given this 14-day competitive snapshot (JSON below), write a 120-160 "
+        "word plain-English digest for a marketing strategist: call out the "
+        "2-3 most important moves, note any pattern across competitors, and "
+        "end with one recommended action. Flowing prose, no bullet points, "
+        "no markdown.\n\n"
         f"Data:\n{json.dumps(payload, indent=2)}"
     )
 
     resp = requests.post(
         ANTHROPIC_URL,
-        headers={"Content-Type": "application/json", "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01"},
+        headers={
+            "Content-Type": "application/json",
+            "x-api-key": ANTHROPIC_API_KEY,
+            "anthropic-version": "2023-06-01",
+        },
         json={
             "model": "claude-sonnet-4-6",
             "max_tokens": 500,
@@ -115,68 +129,45 @@ st.markdown(
     "<span style='font-family:monospace;letter-spacing:2px;color:#8595A8;'>SIGNAL — COMPETITOR TRACKING PROTOTYPE</span>",
     unsafe_allow_html=True,
 )
-st.title("Live competitor snapshot, read in one sitting")
+st.title("Fourteen days of competitor movement, read in one sitting")
 st.caption(
-    "Paste 3–5 competitor ASINs from the same Amazon category. This pulls live price, "
-    "rating, review count, and Best Seller Rank, then generates a plain-English digest."
+    "Category: Insulated Water Bottles · 5 tracked competitors. Data below is synthetic "
+    "for this demo — the digest underneath it is generated live by Claude, not scripted."
 )
 
-if not RAINFOREST_API_KEY or not ANTHROPIC_API_KEY:
+if not ANTHROPIC_API_KEY:
     st.warning(
-        "Missing API keys. Add `RAINFOREST_API_KEY` and `ANTHROPIC_API_KEY` under "
-        "**Settings → Secrets** in Streamlit Community Cloud (or `.streamlit/secrets.toml` locally)."
+        "Missing API key. Add `ANTHROPIC_API_KEY` under **Settings → Secrets** in "
+        "Streamlit Community Cloud (or `.streamlit/secrets.toml` locally)."
     )
 
-default_asins = "B08GC5J8QK\nB07GJTJ7VD\nB01N7T7JKJ"
-asin_input = st.text_area("Competitor ASINs (one per line)", value=default_asins, height=100)
-amazon_domain = st.selectbox("Marketplace", ["amazon.com", "amazon.co.uk", "amazon.de", "amazon.in"], index=0)
+series = build_series()
+rows = snapshot_rows(series)
 
-col1, col2 = st.columns([1, 4])
-with col1:
-    run = st.button("Pull live data", type="primary", use_container_width=True)
+df = pd.DataFrame(rows)[["brand", "title", "price", "price_delta", "rating", "reviews", "reviews_delta", "rank", "rank_delta"]]
+df.columns = ["Brand", "Product", "Price ($)", "Δ 14d ($)", "Rating", "Reviews", "Δ 14d", "BSR", "Δ 14d "]
 
-if run:
-    asins = [a.strip() for a in asin_input.splitlines() if a.strip()]
-    if not asins:
-        st.error("Add at least one ASIN.")
-    else:
-        rows = []
-        progress = st.progress(0.0, text="Fetching live data…")
-        for i, asin in enumerate(asins):
-            try:
-                rows.append(fetch_product(asin, amazon_domain))
-            except Exception as e:
-                st.error(f"Couldn't fetch {asin}: {e}")
-            progress.progress((i + 1) / len(asins))
-        progress.empty()
+st.subheader("Snapshot")
+st.dataframe(df, use_container_width=True, hide_index=True)
 
-        if rows:
-            st.session_state["rows"] = rows
+st.subheader("Weekly digest — generated live")
+if st.button("Generate digest", type="primary"):
+    with st.spinner("Reading the week's changes…"):
+        try:
+            digest = generate_digest(rows)
+            st.session_state["digest"] = digest
+        except Exception as e:
+            st.error(f"Couldn't generate digest: {e}")
 
-if "rows" in st.session_state:
-    rows = st.session_state["rows"]
-    df = pd.DataFrame(rows)[["brand", "title", "price", "rating", "reviews", "rank"]]
-    df.columns = ["Brand", "Product", "Price ($)", "Rating", "Reviews", "BSR"]
-    st.subheader("Snapshot")
-    st.dataframe(df, use_container_width=True, hide_index=True)
-
-    st.subheader("Weekly digest — generated live")
-    if st.button("Generate digest"):
-        with st.spinner("Reading the snapshot…"):
-            try:
-                digest = generate_digest(rows)
-                st.session_state["digest"] = digest
-            except Exception as e:
-                st.error(f"Couldn't generate digest: {e}")
-
-    if "digest" in st.session_state:
-        st.markdown(
-            f"<div style='background:#111823;border:1px solid #232D3B;border-radius:10px;"
-            f"padding:18px;line-height:1.7;'>{st.session_state['digest']}</div>",
-            unsafe_allow_html=True,
-        )
+if "digest" in st.session_state:
+    st.markdown(
+        f"<div style='background:#111823;border:1px solid #232D3B;border-radius:10px;"
+        f"padding:18px;line-height:1.7;color:#E7ECF2;'>{st.session_state['digest']}</div>",
+        unsafe_allow_html=True,
+    )
 
 st.caption(
-    "Prototype — live version for a real client would run this on a daily schedule and "
-    "store historical snapshots to show day-over-day change, not just a single pull."
+    "Prototype — data above is synthetic for this demo. A production version pulls live "
+    "pricing, reviews, and BSR via the Amazon Product Advertising API or a provider such "
+    "as Rainforest/Keepa, refreshed on a daily schedule to show real day-over-day change."
 )
