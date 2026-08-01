@@ -2,11 +2,11 @@
 Signal — Competitor Tracking Prototype
 A lightweight AI agent that tracks Amazon competitor data (price, rating,
 reviews, best-seller rank) and turns it into a plain-English weekly digest
-using Claude.
+using an AI language model.
 
 This demo version uses realistic synthetic data so it works without any
-paid data API. The digest generation below is fully live — it calls Claude
-in real time, it isn't scripted.
+paid data API. The digest generation below is fully live — it calls an
+AI model in real time, it isn't scripted.
 
 Setup:
   1. pip install -r requirements.txt
@@ -80,7 +80,7 @@ def snapshot_rows(series):
 
 
 def generate_digest(rows: list) -> str:
-    """Call Claude to turn the snapshot + 14-day deltas into a plain-English digest."""
+    """Call the AI model to turn the snapshot + 14-day deltas into a plain-English digest."""
     payload = [
         {
             "product": f"{r['brand']} — {r['title']}",
@@ -110,7 +110,7 @@ def generate_digest(rows: list) -> str:
             "anthropic-version": "2023-06-01",
         },
         json={
-            "model": "claude-sonnet-4-6",
+            "model": "claude-sonnet-5",
             "max_tokens": 500,
             "messages": [{"role": "user", "content": prompt}],
         },
@@ -132,7 +132,7 @@ st.markdown(
 st.title("Fourteen days of competitor movement, read in one sitting")
 st.caption(
     "Category: Insulated Water Bottles · 5 tracked competitors. Data below is synthetic "
-    "for this demo — the digest underneath it is generated live by Claude, not scripted."
+    "for this demo — the digest underneath it is generated live by AI, not scripted."
 )
 
 if not ANTHROPIC_API_KEY:
