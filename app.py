@@ -479,6 +479,13 @@ def render_kpis(rows):
             )
 
 
+def hex_to_rgba(hex_color, alpha=0.1):
+    """Convert a '#RRGGBB' hex color string to an 'rgba(r,g,b,a)' string."""
+    hex_color = hex_color.lstrip("#")
+    r, g, b = (int(hex_color[i : i + 2], 16) for i in (0, 2, 4))
+    return f"rgba({r},{g},{b},{alpha})"
+
+
 def plotly_layout(fig, title, y_reversed=False):
     """Apply a shared dark theme + styling to every Plotly figure."""
     fig.update_layout(
@@ -526,11 +533,12 @@ def render_charts(series):
     fig_reviews = go.Figure()
     for i, p in enumerate(series):
         df_h = pd.DataFrame(p["history"])
+        line_color = CHART_COLORS[i % len(CHART_COLORS)]
         fig_reviews.add_trace(
             go.Scatter(
                 x=df_h["day"], y=df_h["reviews"], mode="lines", name=p["brand"],
-                line=dict(color=CHART_COLORS[i % len(CHART_COLORS)], width=3),
-                fill="tozeroy", fillcolor=CHART_COLORS[i % len(CHART_COLORS)].replace(")", ",0.06)").replace("rgb", "rgba") if False else None,
+                line=dict(color=line_color, width=3),
+                fill="tozeroy", fillcolor=hex_to_rgba(line_color, 0.08),
             )
         )
     plotly_layout(fig_reviews, "⭐ Review Count Growth")
@@ -562,14 +570,35 @@ def render_charts(series):
     with row2_col1:
         latest_prices = [p["history"][-1]["price"] for p in series]
         brands = [p["brand"] for p in series]
-        fig_dist = px.box(
-            x=["All Products"] * len(latest_prices),
-            y=latest_prices,
-            points="all",
-            hover_name=brands,
-            color_discrete_sequence=[PALETTE["accent1"]],
+
+        # Box trace shows the overall spread; a single color is required here
+        # (Plotly box traces don't support per-point marker colors).
+        fig_dist = go.Figure()
+        fig_dist.add_trace(
+            go.Box(
+                y=latest_prices,
+                x=["All Products"] * len(latest_prices),
+                name="Spread",
+                boxpoints=False,
+                marker=dict(color=PALETTE["accent1"]),
+                line=dict(color=PALETTE["accent1"]),
+                fillcolor="rgba(124,92,255,0.12)",
+                showlegend=False,
+            )
         )
-        fig_dist.update_traces(marker=dict(size=10, color=CHART_COLORS[: len(latest_prices)]))
+        # Overlay each product as its own colored point (this is where
+        # per-brand coloring actually belongs).
+        for i, (brand, price) in enumerate(zip(brands, latest_prices)):
+            fig_dist.add_trace(
+                go.Scatter(
+                    x=["All Products"],
+                    y=[price],
+                    mode="markers",
+                    name=brand,
+                    marker=dict(size=12, color=CHART_COLORS[i % len(CHART_COLORS)], line=dict(width=1, color="#0B0F17")),
+                    hovertemplate=f"{brand}<br>$%{{y:.2f}}<extra></extra>",
+                )
+            )
         plotly_layout(fig_dist, "📦 Current Price Distribution")
         fig_dist.update_xaxes(title=None)
         fig_dist.update_yaxes(title="Price ($)")
