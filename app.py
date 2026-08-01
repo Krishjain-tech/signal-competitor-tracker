@@ -1,34 +1,24 @@
 """
 Signal — Competitor Tracking Prototype
-A lightweight AI agent that tracks Amazon competitor data (price, rating,
-reviews, best-seller rank) and turns it into a plain-English weekly digest
-using an AI language model.
+A lightweight tool that tracks Amazon competitor data (price, rating,
+reviews, best-seller rank) and turns it into a plain-English weekly digest.
 
-This demo version uses realistic synthetic data so it works without any
-paid data API. The digest generation below is fully live — it calls an
-AI model in real time, it isn't scripted.
+This demo version uses realistic synthetic data and shows a sample digest
+rather than generating one live, so it runs free with no API costs. A
+funded version generates the digest on demand from live data.
 
 Setup:
   1. pip install -r requirements.txt
-  2. Add ANTHROPIC_API_KEY to .streamlit/secrets.toml (locally) or under
-     "Secrets" in Streamlit Community Cloud (when deployed).
-  3. streamlit run app.py
+  2. streamlit run app.py
 """
 
-import json
-import random
-
 import pandas as pd
-import requests
 import streamlit as st
 
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
 st.set_page_config(page_title="Signal — Competitor Tracking", page_icon="📡", layout="wide")
-
-ANTHROPIC_API_KEY = st.secrets.get("ANTHROPIC_API_KEY", "")
-ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 
 DAYS = 14
 
@@ -40,11 +30,24 @@ PRODUCTS = [
     {"name": "AlpineSeal Wide Mouth 32oz", "brand": "AlpineSeal", "price": 25.0, "rating": 4.5, "reviews": 5460, "rank": 590, "seed": 67},
 ]
 
+SAMPLE_DIGEST = (
+    "The clearest move this period came from Northfare, which cut price by roughly "
+    "$2.40 while holding review growth steady — a signal worth watching if it "
+    "continues into next week. CamperPro's review count grew faster than the rest "
+    "of the set, suggesting a recent traffic or promotion push rather than organic "
+    "drift. Everchill's rank slipped the most of the group, likely tied to its "
+    "higher price point relative to competitors moving downward. Recommended watch "
+    "item: track whether Northfare's price cut correlates with a rank improvement "
+    "over the next reporting cycle — that would confirm price elasticity in this "
+    "category."
+)
+
 # ---------------------------------------------------------------------------
 # Synthetic data generation (deterministic per product via seed)
 # ---------------------------------------------------------------------------
 @st.cache_data(show_spinner=False)
 def build_series():
+    import random
     all_rows = []
     for p in PRODUCTS:
         rng = random.Random(p["seed"])
@@ -79,49 +82,6 @@ def snapshot_rows(series):
     return rows
 
 
-def generate_digest(rows: list) -> str:
-    """Call the AI model to turn the snapshot + 14-day deltas into a plain-English digest."""
-    payload = [
-        {
-            "product": f"{r['brand']} — {r['title']}",
-            "price": f"${r['price']}", "price_change_14d": r["price_delta"],
-            "rating": r["rating"],
-            "reviews": r["reviews"], "review_change_14d": r["reviews_delta"],
-            "bsr": r["rank"], "bsr_change_14d": r["rank_delta"],
-        }
-        for r in rows
-    ]
-
-    prompt = (
-        "You are a market intelligence analyst at an Amazon marketing agency. "
-        "Given this 14-day competitive snapshot (JSON below), write a 120-160 "
-        "word plain-English digest for a marketing strategist: call out the "
-        "2-3 most important moves, note any pattern across competitors, and "
-        "end with one recommended action. Flowing prose, no bullet points, "
-        "no markdown.\n\n"
-        f"Data:\n{json.dumps(payload, indent=2)}"
-    )
-
-    resp = requests.post(
-        ANTHROPIC_URL,
-        headers={
-            "Content-Type": "application/json",
-            "x-api-key": ANTHROPIC_API_KEY,
-            "anthropic-version": "2023-06-01",
-        },
-        json={
-            "model": "claude-sonnet-5",
-            "max_tokens": 500,
-            "messages": [{"role": "user", "content": prompt}],
-        },
-        timeout=60,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    text_blocks = [b["text"] for b in data.get("content", []) if b.get("type") == "text"]
-    return "\n".join(text_blocks).strip()
-
-
 # ---------------------------------------------------------------------------
 # UI
 # ---------------------------------------------------------------------------
@@ -132,14 +92,9 @@ st.markdown(
 st.title("Fourteen days of competitor movement, read in one sitting")
 st.caption(
     "Category: Insulated Water Bottles · 5 tracked competitors. Data below is synthetic "
-    "for this demo — the digest underneath it is generated live by AI, not scripted."
+    "for this demo. The digest is a representative sample — the live version generates "
+    "one on demand from real tracked changes."
 )
-
-if not ANTHROPIC_API_KEY:
-    st.warning(
-        "Missing API key. Add `ANTHROPIC_API_KEY` under **Settings → Secrets** in "
-        "Streamlit Community Cloud (or `.streamlit/secrets.toml` locally)."
-    )
 
 series = build_series()
 rows = snapshot_rows(series)
@@ -150,24 +105,16 @@ df.columns = ["Brand", "Product", "Price ($)", "Δ 14d ($)", "Rating", "Reviews"
 st.subheader("Snapshot")
 st.dataframe(df, use_container_width=True, hide_index=True)
 
-st.subheader("Weekly digest — generated live")
-if st.button("Generate digest", type="primary"):
-    with st.spinner("Reading the week's changes…"):
-        try:
-            digest = generate_digest(rows)
-            st.session_state["digest"] = digest
-        except Exception as e:
-            st.error(f"Couldn't generate digest: {e}")
-
-if "digest" in st.session_state:
-    st.markdown(
-        f"<div style='background:#111823;border:1px solid #232D3B;border-radius:10px;"
-        f"padding:18px;line-height:1.7;color:#E7ECF2;'>{st.session_state['digest']}</div>",
-        unsafe_allow_html=True,
-    )
+st.subheader("Weekly digest — sample output")
+st.markdown(
+    f"<div style='background:#111823;border:1px solid #232D3B;border-radius:10px;"
+    f"padding:18px;line-height:1.7;color:#E7ECF2;'>{SAMPLE_DIGEST}</div>",
+    unsafe_allow_html=True,
+)
 
 st.caption(
     "Prototype — data above is synthetic for this demo. A production version pulls live "
     "pricing, reviews, and BSR via the Amazon Product Advertising API or a provider such "
-    "as Rainforest/Keepa, refreshed on a daily schedule to show real day-over-day change."
+    "as Rainforest/Keepa, and generates a fresh digest on demand from real day-over-day "
+    "change."
 )
